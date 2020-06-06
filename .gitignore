@@ -1,0 +1,6 @@
+,git
+.idea
+__pycache__
+data/
+model/
+resources/

@@ -1,0 +1,26 @@
+文件夹 PATH 列表
+卷序列号为 34C0-F5DE
+C:.
+│  clean_pkubase.py
+│  fileTree.txt
+│  get_mention2ent.py
+│  models.py
+│  networks.py
+│  README.md
+│  sparql.py
+│  train_filter.py
+│  train_filter_prepare.py
+│  try_.py
+│  
+├─data
+│  └─ccks_2020_7_4_Data
+│         task1-4_train_2020.txt
+│         task1-4_valid_2020.questions
+│          
+├─model
+└─resources
+    │  pkubase-mention2ent.txt
+    │  
+    └─pkubase-complete-2020
+            pkubase-complete.txt
+        
