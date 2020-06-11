@@ -3,8 +3,10 @@ import random
 import re
 
 import jieba
-from stanfordcorenlp import StanfordCoreNLP
+# from stanfordcorenlp import StanfordCoreNLP
 from datetime import datetime
+
+from SPARQLWrapper import JSON, SPARQLWrapper
 
 
 def sparql_parser(line):
@@ -111,7 +113,7 @@ def txt2json_train():
 
     # 保存训练集的字
     characters = json.load(open('resources/characters.txt', 'r', encoding='utf-8'))
-    # load our dict.txt, note that we cleared default dict.txt
+    # load our dict.txt
     jieba.load_userdict('resources/dict.txt')
     print('loaded user dict: ', datetime.now() - start_time)
 
@@ -123,7 +125,7 @@ def txt2json_train():
         for line in file:
             i += 1
             if i == 1:
-                question = re.findall(r'q[0-9]+:(.+)', line.rstrip('？\n'))[0]
+                question = re.findall(r'q[0-9]+:(.+)', line.rstrip('？\n').rstrip('?\n'))[0]
                 characters += list(question)
                 # print(re.findall(r'q([0-9]+):', line.strip())[0])
             elif i == 2:
@@ -134,13 +136,14 @@ def txt2json_train():
                 # count += 1
 
                 # jieba分词
-                splited_question = [word for word in jieba.lcut(question, cut_all=True) if word not in ['', ' ', ',']]
+                splited_question = [word for word in jieba.lcut(question, cut_all=True) if word not in ['', ' ', ',', '?', '？']]
+                # splited_question = [word for word in jieba.lcut(question) if word not in ['', ' ', ',', '?', '？']]
 
                 data.append({
                     'question': question,
                     'tokens': splited_question,
                     # 'entity_mention': entity_mention,
-                    'candidate_entity': {},
+                    'entity_candidates': {},
                     'parse': parse,
                     'answer': answer,
                     'sparql': sparql
@@ -160,6 +163,9 @@ def txt2json_train():
     print('\nevaluating the ratio of entity existed in candidates ...')
     evaluate_entity_precision(data)
 
+    print('\ngetting entity-relation pair ...')
+    data = get_entity_relation_pair(data)
+
     print('\nspliting data into train and test ...')
     split_train_test(data)
 
@@ -168,23 +174,23 @@ def get_entity_candidates(data):
     mention2ent = json.load(open('resources/mention2ent.json', 'r', encoding='utf-8'))
     count = 0
     for node in data:
-        node['candidate_entity'] = {}
+        node['entity_candidates'] = {}
         for token in node['tokens']:
             if token in mention2ent:
-                node['candidate_entity'][token] = mention2ent[token]
+                node['entity_candidates'][token] = mention2ent[token]
             else:
                 # ！todo 当mention没有直接存在mention2ent.txt中时（提升点）
                 if token.lower() in mention2ent:
-                    node['candidate_entity'][token.lower()] = mention2ent[token.lower()]
+                    node['entity_candidates'][token.lower()] = mention2ent[token.lower()]
                 if token.upper() in mention2ent:
-                    node['candidate_entity'][token.upper()] = mention2ent[token.upper()]
-        for candidate in list(node['candidate_entity'].values()):
+                    node['entity_candidates'][token.upper()] = mention2ent[token.upper()]
+        for candidate in list(node['entity_candidates'].values()):
             count += len(candidate)
 
         # 让entity按parse的长度下降排序
         node['parse'] = sorted(node['parse'], key=lambda item: len(item['direction']), reverse=True)
 
-    print('average entity candidates: ', count/len(data))  # 47.2325
+    print('average entity candidates: ', count/len(data))  # 45
     print('data: %d, got entity candidates' % len(data))
     return data
 
@@ -198,7 +204,7 @@ def evaluate_entity_precision(data):
     for node in data:
         r = 0
         entity = [each['entity'] for each in node['parse']]
-        cadidate = sum(list(node['candidate_entity'].values()), [])  # 多维list转为一维
+        cadidate = sum(list(node['entity_candidates'].values()), [])  # 多维list转为一维
         # print(cadidate)
         for e in entity:
             if e in cadidate:
@@ -207,8 +213,86 @@ def evaluate_entity_precision(data):
             rate += (r/len(entity))
         if len(entity) == 0 or r != len(entity):
             error.append(node)
-    print('the ratio of true entities exist in candidates: ', rate/len(data))  # 0.9340416666666667
+    print('the ratio of true entities exist in candidates: ', rate/len(data))  # 0.9339166666666666
     json.dump(error, open('data/error.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+
+
+def get_entity_relation_pair(data):
+    from sparql import endpoint
+
+    def get_relation(query):
+        sparql = SPARQLWrapper(endpoint)
+        sparql.setQuery(query)
+        sparql.setReturnFormat(JSON)
+        # sparql.setTimeout(5)
+        results = sparql.query().convert()
+        relation = []
+        for result in results['results']['bindings']:
+            if 'relation' in result:
+                relation.append(result['relation']['value'])
+        return relation
+
+    entity_relation = 'select distinct ?relation from <http://pkubase.cn> where {{{entity} ?relation ?object}}'
+    relation_entity = 'select distinct ?relation from <http://pkubase.cn> where {{?subject ?relation {entity}}}'
+
+    count = 0
+    number = 0
+    for node in data:
+        number += 1
+        # print(number, node['question'])
+        if number % 100 == 0:
+            print(number, ' got entity_relation pair')
+
+        pair_candidates = {}
+        for mention, es in node['entity_candidates'].items():  # entity_candidates
+            pair_candidates[mention] = []
+            for e in es:
+                if any([c in e[1:-1] for c in [' ', '|', '<', '>', '"', '{', '}', '\\']]):  # sparql query报错了
+                    continue
+                # print(e)
+                relations = get_relation(entity_relation.format(entity=e))
+                for r in relations:
+                    pair_candidates[mention].append([[e, '<'+r+'>'], 'er'])
+
+                relations = get_relation(relation_entity.format(entity=e))
+                for r in relations:
+                    pair_candidates[mention].append([['<'+r+'>', e], 're'])
+        node['pair_candidates'] = pair_candidates
+
+        for candidate in list(node['pair_candidates'].values()):
+            count += len(candidate)
+    print('average entity-relation pair number for each question is', count/len(data))  # 928.45
+
+    print('evaluating precision ... ')
+    evaluate_pair_precision(data)
+    return data
+
+
+def evaluate_pair_precision(data):
+    rate = 0.0
+    # error = []
+    for node in data:
+        r = 0
+        true_pair = []  # 文字
+        for p in node['parse']:
+            if p['direction'][0] == 'l':
+                true_pair.append([p['path'][0][:2], 'er'])
+            else:
+                true_pair.append([p['path'][0][1:], 're'])
+        candidate = sum(list(node['pair_candidates'].values()), [])  # 多维list转为一维
+        # print(candidate)
+        for e in true_pair:
+            if e in candidate:
+                r += 1
+        if len(true_pair) != 0:
+            rate += (r / len(true_pair))
+
+        # print(json.dumps(node, indent=4, ensure_ascii=False))
+        # print(candidate)
+        # print(json.dumps(node['parse'], indent=4, ensure_ascii=False))
+        # print(true_pair)
+
+    print('the ratio of true entity_relation pair exist in candidates: ', rate / len(data))  # 0.89
 
 
 def split_train_test(data):
@@ -230,3 +314,7 @@ def split_train_test(data):
 
 if __name__ == '__main__':
     txt2json_train()
+
+    # data = json.load(open('data/train_filter/train.json', 'r', encoding='utf-8')) + \
+    #        json.load(open('data/train_filter/dev.json', 'r', encoding='utf-8'))
+    # get_entity_relation_pair(data)

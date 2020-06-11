@@ -2,14 +2,15 @@ import json
 from SPARQLWrapper import SPARQLWrapper, JSON
 from datetime import datetime
 
-
 endpoint = 'http://10.201.180.179:8890/sparql'
 
 
 def build_sparql(parse):
     # !todo ttl长度为2暂时不考虑(filter语句)
+    # 根据之前解析的结果重新组建成SPARQL
     sparql = 'select distinct ?x from <http://pkubase.cn> where {{{query}}} LIMIT 100'
     query = []
+    answer_ttl = {}
     answer = '?x'
     for p in range(len(parse)):
         last_v = parse[p]['entity']
@@ -24,10 +25,33 @@ def build_sparql(parse):
                 ttl = [v, parse[p]['path'][d][1], last_v]
             query.append(' '.join(ttl))
             last_v = v
-        query[-1] = query[-1].replace(last_v, answer)
-    query.append(' ')
-    # !todo 构建查询图时合并相同关系的ttl
-    query = ' . '.join(query)
+        query[-1] = query[-1].replace(last_v, answer)  # 一条链结束了，将最后一个变量换成答案变量
+
+        # 获取所有包含答案变量的三元组
+        elements = query[-1].split(' ')
+        if '?' in elements[0] and '?' in elements[-1]:
+            if elements[0] == answer:
+                key = ' '.join(elements[:-1])
+                v = -1
+            else:
+                key = ' '.join(elements[1:])
+                v = 0
+            if key in answer_ttl:
+                answer_ttl[key].append(elements[v])
+            else:
+                answer_ttl[key] = [elements[v]]
+
+    query.append(' ')  # 为了最后一个ttl也能有 . , ^ ^
+    query = ' . '.join(query)  # to string
+
+    # 替换变量
+    i = 0
+    for _, value in answer_ttl.items():
+        v = '?v' + str(i)
+        for each in value:
+            query = query.replace(each, v)
+        i += 1
+
     return sparql.format(query=query)
 
 
@@ -62,8 +86,9 @@ if __name__ == '__main__':
     测试还原解析的sparql方法的效果
     '''
     start_time = datetime.now()
-    path = 'data/train.json'
-    data = json.load(open(path, 'r', encoding='utf-8'))
+    # data = json.load(open('data/train_filter/train.json', 'r', encoding='utf-8')) + \
+    #        json.load(open('data/train_filter/dev.json', 'r', encoding='utf-8'))
+    data = json.load(open('data/train_filter/dev.json', 'r', encoding='utf-8'))
     count = 0
     precision = 0
     recall = 0
@@ -83,11 +108,11 @@ if __name__ == '__main__':
 
         if count % 100 == 0:
             print(count, ' finished')
-        # print(count, ' finished')
+            # break
     precision /= len(data)
     recall /= len(data)
     f1 /= len(data)
-    # 准确率： 0.930954, 召回率：0.942679, F1-score：0.931585
-    # 0:08:39.175901
+    # 自己的pkubase-clean， 准确率： 0.933367, 召回率：0.942193, F1-score：0.933314
+    # 官方endpoint，
     print('准确率： %f, 召回率：%f, F1-score：%f' % (precision, recall, f1))
     print(datetime.now() - start_time)

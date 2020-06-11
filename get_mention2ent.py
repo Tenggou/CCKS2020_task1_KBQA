@@ -51,10 +51,12 @@ if __name__ == '__main__':
     with open('resources/pkubase-mention2ent.txt', 'r', encoding='utf-8') as file:
         for line in file:
             temp = line.strip().split('\t')
-            if len(temp) != 3 or not re.fullmatch('[0-9]+', temp[-1]):
+
+            count += 1
+
+            if len(temp) != 3:
                 # print(temp)
                 continue
-            count += 1
 
             if count % 500000 == 0:
                 for key, value in mention2ent.items():
@@ -62,6 +64,11 @@ if __name__ == '__main__':
                 print(count, ' finished, ', datetime.now()-start_time)
 
             mention, entity, num = temp
+
+            if ' ' in entity or ' ' in mention or not re.fullmatch('[0-9]+', temp[-1]):
+                # 过滤不合法情况
+                continue
+
             if mention in mention2ent:
                 if '<'+entity+'>' not in mention2ent[mention]:
                     mention2ent[mention].append('<'+entity+'>')

@@ -14,14 +14,14 @@ class Filter(object):
         self.encoder = BiLSTM(device=self.device, size_vocabulary=size_vocabulary).to(device)
         self.cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
 
-    def load(self, model_path='model/filter-'):
+    def load(self, model_path='model/filter/'):
         state_dict = torch.load(model_path + '.model')
         self.encoder.load_state_dict(state_dict['encoder'])
         print('loading model: ', model_path+'.model')
         print('result: ', state_dict['result'])
         print('saved time: ', state_dict['time'])
 
-    def save(self, result=0, model_path='model/filter-'):
+    def save(self, result=0, model_path='model/filter/'):
         torch.save({
             'encoder': self.encoder.state_dict(),
             'result': result,
@@ -33,9 +33,9 @@ class Filter(object):
 
         optimizer.zero_grad()  # 清空优化器 why?
         ques = self.encoder(data['ques'])
-        ent = self.encoder(data['ent'])
+        pair = self.encoder(data['pair'])
         # scores = self.cos(ques, ent)
-        scores = torch.sum(ques * ent, -1)
+        scores = torch.sum(ques * pair, -1)
 
         # print('forward time', datetime.now() - start_time)
         # start_time = datetime.now()
@@ -58,7 +58,7 @@ class Filter(object):
         with torch.no_grad():  # 无法计算梯度，能够节省算力
             self.encoder.eval()  # 影响一些功能，如dropout，batchnorm
             ques = self.encoder(data['ques'])
-            ent = self.encoder(data['ent'])
+            ent = self.encoder(data['pair'])
             self.encoder.train()
             # scores = self.cos(ques, ent)
             scores = torch.sum(ques*ent, -1)

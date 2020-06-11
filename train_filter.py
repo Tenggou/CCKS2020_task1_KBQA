@@ -2,6 +2,8 @@ import argparse
 import ast
 import json
 from datetime import datetime
+import random
+
 import torch
 import torch.nn as nn
 from torch import optim
@@ -21,26 +23,34 @@ class TrainFilterDataset(Dataset):
         question = [[self.vocabulary[q] if q in self.vocabulary else self.vocabulary['UNK'] for q in
                      list(self.data[item]['question'])]]
 
-        # 取出正确的实体(训练正例)
-        true_entity = []  # index
-        true_entity_ = []  # 文字
+        # 训练正例
+        true_pair = []  # index
+        true_pair_ = []  # 文字
         for p in self.data[item]['parse']:
-            true_entity.append(
-                [self.vocabulary[t] if t in self.vocabulary else self.vocabulary['UNK'] for t in p['entity']])
-            true_entity_.append(p['entity'])
+            if p['direction'][0] == 'l':
+                pair = p['path'][0][:2]
+            else:
+                pair = p['path'][0][1:]
+            true_pair.append(
+                [self.vocabulary[t] if t in self.vocabulary else self.vocabulary['UNK'] for t in ''.join(pair)])
+            true_pair_.append(pair)
 
         # 训练负例
-        entity = []
-        for key, value in self.data[item]['candidate_entity'].items():
-            for v in value:  # each entity candidate
-                if v not in true_entity_:
-                    entity.append([self.vocabulary[e] if e in self.vocabulary else self.vocabulary['UNK'] for e in v])
+        fake_pair = []
+        for value in self.data[item]['pair_candidates'].values():
+            for v in value:  # each entity_relation pair
+                if v[0] not in true_pair_:
+                    fake_pair.append([self.vocabulary[e] if e in self.vocabulary else self.vocabulary['UNK'] for e in ''.join(v[0])])
 
-        label = [0] * len(entity) + [1] * len(true_entity)
-        entity += true_entity
+        # 每个就选取100个负例来训练
+        if len(fake_pair) > 100:
+            fake_pair = random.sample(fake_pair, 100)
+
+        label = [0] * len(fake_pair) + [1] * len(true_pair)
+        pair = fake_pair + true_pair
         return {
-            'ques': question * len(entity),
-            'ent': entity,
+            'ques': question * len(pair),
+            'pair': pair,
             'label': label
         }
 
@@ -57,23 +67,29 @@ class TestFilterDataset(Dataset):
         question = [[self.vocabulary[q] if q in self.vocabulary else self.vocabulary['UNK'] for q in
                      list(self.data[item]['question'])]]
 
-        true_entity = []  # index
+        true_pair = []  # 文字
         for p in self.data[item]['parse']:
-            true_entity.append(
-                [self.vocabulary[t] if t in self.vocabulary else self.vocabulary['UNK'] for t in p['entity']])
+            if p['direction'][0] == 'l':
+                true_pair.append([p['path'][0][:2], 'er'])
+            else:
+                true_pair.append([p['path'][0][1:], 're'])
 
-        entity = []
+        pair = []  # index
+        pair_ = []  # 文字
         mention = []
-        for key, value in self.data[item]['candidate_entity'].items():
-            for v in value:  # each entity candidate
-                entity.append([self.vocabulary[e] if e in self.vocabulary else self.vocabulary['UNK'] for e in v])
+        for key, value in self.data[item]['pair_candidates'].items():
+            for v in value:  # each entity_relation pair
+                pair.append(
+                        [self.vocabulary[e] if e in self.vocabulary else self.vocabulary['UNK'] for e in ''.join(v[0])])
                 mention.append(key)
+                pair_.append(v)
 
         return {
             'ques': question,
-            'ent': entity,
-            'mention': mention,
-            'true_ent': true_entity
+            'pair': pair,  # index
+            'pair_': pair_,  # 文字
+            'mention': mention,  # 后面用于对mention取topk
+            'true_pair': true_pair  # 文字
         }
 
     def __len__(self):
@@ -88,7 +104,7 @@ def train_filter_collate(batch_data):
     # 将数据整理为能够并行处理的格式
     return {
         'ques': [ques for data in batch_data for ques in data['ques']],
-        'ent': [ent for data in batch_data for ent in data['ent']],
+        'pair': [ent for data in batch_data for ent in data['pair']],
         'label': [label for data in batch_data for label in data['label']]
     }
 
@@ -139,6 +155,17 @@ def train_loop(model, optimizer, loss_fn, model_path, batch_size, vocabulary):
     print('train used time is', datetime.now() - train_time, '\n')
 
 
+def get_topk_candidate(index, data, k):
+    # get best candidate for each mention
+    pair = {}
+    for i in index:
+        if data['mention'][i] not in pair and len(pair) < 3:
+            pair[data['mention'][i]] = [data['pair_'][i]]
+        elif data['mention'][i] in pair and len(pair[data['mention'][i]]) < k:
+            pair[data['mention'][i]].append(data['pair_'][i])
+    return pair
+
+
 def evaluate(model, data):
     print('evaluating ...')
     start_time = datetime.now()
@@ -147,25 +174,15 @@ def evaluate(model, data):
 
     def calulate_acc(true, pred):
         acc = 0
-        for key, value in pred.items():
+        for value in pred.values():
             for v in value:
                 if v in true:
                     acc += 1
         return acc / len(true)
 
-    def get_topk_candidate(index, data, k):
-        # get best candidate for each mention
-        entity = {}
-        for i in index:
-            if data['mention'][i] not in entity and len(entity) < 3:
-                entity[data['mention'][i]] = [data['ent'][i]]
-            elif data['mention'][i] in entity and len(entity[data['mention'][i]]) < k:
-                entity[data['mention'][i]].append(data['ent'][i])
-        return entity
-
     for i, item in enumerate(data):
         index = model.predict(item).tolist()
-        acc = calulate_acc(item['true_ent'], get_topk_candidate(index, item, k))
+        acc = calulate_acc(item['true_pair'], get_topk_candidate(index, item, k))
         accuracy += acc
         length += 1
     accuracy /= length
@@ -182,7 +199,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-batch', help='int: 50', default=50, type=int)
     parser.add_argument('--lr', '-lr', help='学习率, 默认1e-3', default=1e-3, type=float)
     parser.add_argument('--is_train', '-train', help='bool, 默认True', default=True, type=ast.literal_eval)
-    parser.add_argument('--model_path', '-path', help='模型路径, str', default='model/filter-', type=str)
+    parser.add_argument('--model_path', '-path', help='模型路径, str', default='model/filter/', type=str)
     parser.add_argument('--k', '-k', help='int', default=3, type=int)
     args = parser.parse_args()
 
@@ -235,4 +252,4 @@ if __name__ == '__main__':
         _ = evaluate(model=model, data=test_data)
 
     print('all used time is', datetime.now() - start_time)
-    # k=1 0.820 k=3 0.896 k=5 0.917 k=10 0.929
+    # BILSTM: k=3 0.78 k=10 0.84

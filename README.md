@@ -4,8 +4,8 @@
 
 #### requirements：
 
-1. jieba
-2. pytorch
+1. jieba-0.42.1
+2. pytorch-1.2.0
 
 
 
