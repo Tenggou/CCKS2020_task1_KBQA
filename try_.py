@@ -31,8 +31,68 @@ def check_query_grap():
     print(json.dumps(templates, indent=4))
 
 
+def get_error_result():
+    data = json.load(open('data/our_dev_result.json', 'r', encoding='utf-8'))
+    error = []
+    for node in data:
+        for answer in node['answer']:
+            if answer not in node['pred_answer']:
+                if node not in error:
+                    error.append(node)
+                    break
+        for answer in node['pred_answer']:
+            if answer not in node['answer']:
+                if node not in error:
+                    error.append(node)
+                    break
+    print('%d data predict wrong answers. ' % len(error))
+    error = random.sample(error, 100) if len(error) > 100 else error
+    print('%d data predict wrong answers, using for error analyis. ' % len(error))
+    json.dump(error, open('data/error_analysis.json', 'w', encoding='utf-8'), indent=4, ensure_ascii=False)
+
+
+def error_analysis():
+    error = json.load(open('data/error_analysis.json', 'r', encoding='utf-8'))
+    error_dict = {
+        'answer error': 0,
+        'relation error': 0,
+        'entity error': 0,
+        'entity number error': 0
+    }
+
+    for node in error:
+        if len(node['pred']) == len(node['parse']) and all([e in node['pred'] for e in node['parse']]):
+            error_dict['answer error'] += 1
+            # print(node['answer'])
+            # print(node['pred_answer'])
+            # print(node['parse'])
+            # print(node['pred'])
+        else:
+            if len(node['pred']) != len(node['parse']):
+                error_dict['entity number error'] += 1
+                # print(node['parse'])
+                # print(node['pred'])
+            elif not all([any([parse[:1] == pred[:1] for parse in node['parse']]) for pred in node['pred']]):
+                error_dict['entity error'] += 1
+                # print(node['parse'])
+                # print(node['pred'])
+                # print([any([parse[:3] == pred[:3] for parse in node['parse']]) for pred in node['pred']])
+            elif not all([any([parse[:1] == pred[:1] for pred in node['pred']]) for parse in node['parse']]):
+                error_dict['entity error'] += 1
+                # print(node['parse'])
+                # print(node['pred'])
+                # print([any([parse[:3] == pred[:3] for parse in node['parse']]) for pred in node['pred']])
+            else:
+                error_dict['relation error'] += 1
+                print(node['parse'])
+                print(node['pred'])
+    print(error_dict)
+
+
 if __name__ == '__main__':
+
     # check_query_grap()
 
-    data = json.load(open('data/our_dev_result.json', 'r', encoding='utf-8'))
-    json.dump(random.sample(data, 100), open('data/error_analysis.json', 'w', encoding='utf-8'), indent=4, ensure_ascii=False)
+    # get_error_result()
+
+    error_analysis()
