@@ -55,8 +55,8 @@ def error_analysis():
     error = json.load(open('data/error_analysis.json', 'r', encoding='utf-8'))
     error_dict = {
         'answer error': 0,
-        'relation error': 0,
-        'entity error': 0,
+        'query graph error': 0,
+        'entity-relation pair error': 0,
         'entity number error': 0
     }
 
@@ -72,18 +72,18 @@ def error_analysis():
                 error_dict['entity number error'] += 1
                 # print(node['parse'])
                 # print(node['pred'])
-            elif not all([any([parse[:1] == pred[:1] for parse in node['parse']]) for pred in node['pred']]):
-                error_dict['entity error'] += 1
+            elif not all([any([parse[:3] == pred[:3] for parse in node['parse']]) for pred in node['pred']]):
+                error_dict['entity-relation pair error'] += 1
                 # print(node['parse'])
                 # print(node['pred'])
                 # print([any([parse[:3] == pred[:3] for parse in node['parse']]) for pred in node['pred']])
-            elif not all([any([parse[:1] == pred[:1] for pred in node['pred']]) for parse in node['parse']]):
-                error_dict['entity error'] += 1
+            elif not all([any([parse[:3] == pred[:3] for pred in node['pred']]) for parse in node['parse']]):
+                error_dict['entity-relation pair error'] += 1
                 # print(node['parse'])
                 # print(node['pred'])
                 # print([any([parse[:3] == pred[:3] for parse in node['parse']]) for pred in node['pred']])
             else:
-                error_dict['relation error'] += 1
+                error_dict['query graph error'] += 1
                 print(node['parse'])
                 print(node['pred'])
     print(error_dict)
