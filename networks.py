@@ -61,7 +61,7 @@ class BERT(nn.Module):
         super(BERT, self).__init__()
         self.encoder = BertModel.from_pretrained('resources/bert-base-chinese')
         self.encoder.train()
+        self.output_layer = nn.Linear(768, 1)
 
-    def forward(self, tokens):
-        cls = self.encoder(tokens)[1]
-        return cls
+    def forward(self, input_ids, token_type_ids):
+        return self.output_layer(self.encoder(input_ids=input_ids, token_type_ids=token_type_ids)[1]).view(-1)

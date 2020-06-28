@@ -42,8 +42,8 @@ class RankDataset(Dataset):
 
         if self.is_train:
             qg = sum(list(node['qg_candidates'].values()), [])
-            if len(qg) > 100:
-                qg = random.sample(qg, 100)
+            if len(qg) > 64:
+                qg = random.sample(qg, 64)
             for each in qg:
                 if len(each) == len(node['parse']) and all([e in each for e in node['parse']]):
                     qg.remove(each)
@@ -67,22 +67,19 @@ class RankDataset(Dataset):
             qg_sentence.append(''.join(ps))  # list of string
 
         if self.model_name == 'bert':
-            ques = self.tokenizer.encode_plus(
-                ques,
-                None,
-                add_special_tokens=True,
-                max_length=self.max_len,
-                pad_to_max_length=True,
-                return_token_type_ids=True
-            )['input_ids']
-            qg_sentence = [self.tokenizer.encode_plus(
-                each,
-                None,
-                add_special_tokens=True,
-                max_length=self.max_len,
-                pad_to_max_length=True,
-                return_token_type_ids=True
-            )['input_ids'] for each in qg_sentence]
+            input_ids = []
+            token_type_ids = []
+            for each in qg_sentence:
+                enc = self.tokenizer.encode_plus(
+                    ques,
+                    each,
+                    add_special_tokens=True,
+                    max_length=self.max_len,
+                    pad_to_max_length=True,
+                    return_token_type_ids=True
+                )
+                input_ids.append(enc['input_ids'])
+                token_type_ids.append(enc['token_type_ids'])
         elif self.model_name == 'lstm':
             def get_index(string):
                 return [self.vocabulary[q] if q in self.vocabulary else self.vocabulary['UNK'] for q in list(string)]
@@ -96,13 +93,13 @@ class RankDataset(Dataset):
         if self.is_train:
             if self.model_name == 'bert':
                 return {
-                    'ques': torch.tensor([ques] * len(qg), dtype=torch.long).to(device=self.device),
-                    'qg': torch.tensor(qg_sentence, dtype=torch.long).to(device=self.device),
+                    'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                    'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                     'label': torch.tensor(label, dtype=torch.float).to(device=self.device)
                 }
             elif self.model_name == 'lstm':
                 return {
-                    'ques': [torch.tensor(ques, dtype=torch.long).to(device=self.device)]*len(qg),
+                    'ques': [torch.tensor(ques, dtype=torch.long).to(device=self.device)] * len(qg),
                     'qg': [torch.tensor(each, dtype=torch.long).to(device=self.device) for each in qg_sentence],
                     'label': torch.tensor(label, dtype=torch.float).to(device=self.device)
                 }
@@ -110,14 +107,14 @@ class RankDataset(Dataset):
             if self.model_name == 'bert':
                 if self.is_test:
                     return {
-                        'ques': torch.tensor([ques] * len(qg), dtype=torch.long).to(device=self.device),
-                        'qg': torch.tensor(qg_sentence, dtype=torch.long).to(device=self.device),
+                        'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                        'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                         'qg_': qg,  # 文字
                         'origin_data': node
                     }
                 return {
-                    'ques': torch.tensor([ques] * len(qg), dtype=torch.long).to(device=self.device),
-                    'qg': torch.tensor(qg_sentence, dtype=torch.long).to(device=self.device),
+                    'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                    'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                     'qg_': qg,  # 文字
                     'parse': node['parse'],  # 正确查询图
                     'origin_data': node
@@ -131,7 +128,7 @@ class RankDataset(Dataset):
                         'origin_data': node
                     }
                 return {
-                    'ques': [torch.tensor(ques, dtype=torch.long).to(device=self.device)]*len(qg),
+                    'ques': [torch.tensor(ques, dtype=torch.long).to(device=self.device)] * len(qg),
                     'qg': [torch.tensor(each, dtype=torch.long).to(device=self.device) for each in qg_sentence],
                     'qg_': qg,  # 文字
                     'parse': node['parse'],  # 正确查询图
@@ -140,17 +137,17 @@ class RankDataset(Dataset):
 
 
 def train_rank_collate(batch_data):
-    if type(batch_data[0]['ques']) == list:
+    if 'ques' in batch_data[0]:  # lstm
         return {
             'ques': [ques for data in batch_data for ques in data['ques']],
             'qg': [ent for data in batch_data for ent in data['qg']],
             'label': torch.cat(tuple([data['label'] for data in batch_data]))
         }
-    elif type(batch_data[0]['ques']) == torch.Tensor:
+    elif 'input_ids' in batch_data[0]:  # bert
         return {
-            'ques': torch.cat(tuple([data['ques'] for data in batch_data])),
-            'qg': torch.cat(tuple([data['qg'] for data in batch_data])),
-            'label': torch.cat(tuple([data['label'] for data in batch_data]))
+            'input_ids': torch.cat(tuple([data['input_ids'] for data in batch_data])),
+            'token_type_ids': torch.cat(tuple([data['token_type_ids'] for data in batch_data])),
+            'label': torch.cat(tuple([data['label'] for data in batch_data]))  # .half()  # 半精度
         }
 
 
@@ -158,7 +155,8 @@ def test_collate(batch_data):
     return batch_data[0]
 
 
-def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_data, dev_data, device, model_name, vocabulary):
+def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_data, dev_data, device, model_name,
+               vocabulary):
     train_time = datetime.now()
 
     dev_data = DataLoader(
@@ -171,14 +169,14 @@ def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_
     flag = 0
     all_loss = []
     result = evaluate(model=model, data=dev_data)
+    # result = 0
     for epoch in range(epochs):
         print('\n\n%d epoch train start' % (int(epoch) + 1))
         epoch_time = datetime.now()
         epoch_loss = []
 
-        # loaddatatime = datetime.now()
         for i, item in enumerate(train_data):
-            epoch_loss.append(model.train_rank(item, loss_fn=loss_fn, optimizer=optimizer))
+            epoch_loss.append(model.train_rank(item, loss_fn=loss_fn, optimizer=optimizer, i=i))
 
         epoch_loss = np.mean(epoch_loss)
         all_loss.append(epoch_loss)
@@ -192,7 +190,7 @@ def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_
             flag = 0
         else:
             flag += 1
-        if flag >= 5:
+        if flag >= 3:
             break
 
     print('\nbest accuracy is %.3f' % result)
@@ -225,10 +223,10 @@ if __name__ == '__main__':
     start_time = datetime.now()
     parser = argparse.ArgumentParser(description='gpu, epochs, batch_size, lr, is_train')
     parser.add_argument('--gpu', '-gpu', help='str :0, 1, 选择GPU， 默认0', default='0', type=str)
-    parser.add_argument('--model_name', '-name', help='str', default='lstm', type=str)
+    parser.add_argument('--model_name', '-name', help='str', default='bert', type=str)
     parser.add_argument('--epochs', '-epochs', help='int: 300', default=300, type=int)
-    parser.add_argument('--batch_size', '-batch', help='int', default=50, type=int)
-    parser.add_argument('--lr', '-lr', help='学习率, 默认1e-3', default=1e-3, type=float)
+    parser.add_argument('--batch_size', '-batch', help='int', default=4, type=int)  # lstm:50 bert:4
+    parser.add_argument('--lr', '-lr', help='学习率, 默认1e-3', default=2e-5, type=float)  # lstm: 1e-3 bert: 2e-5
     parser.add_argument('--is_train', '-train', help='bool, 默认True', default=True, type=ast.literal_eval)
     parser.add_argument('--model_path', '-path', help='模型路径, str', default='model/rank/', type=str)
     parser.add_argument('--is_load', '-load', help='bool, 默认False', default=False, type=ast.literal_eval)
@@ -250,17 +248,15 @@ if __name__ == '__main__':
     # 速度提升不明显
     if torch.cuda.is_available():
         from torch.backends import cudnn
-
         cudnn.benchmark = True
     print('device name ', device)
 
     vocabulary = load_vocabulary()
-    model = Model(device=device, size_vocabulary=len(vocabulary)+1, model_name=model_name)
+    model = Model(device=device, size_vocabulary=len(vocabulary) + 1, model_name=model_name)
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(list(filter(lambda x: x.requires_grad, model.encoder.parameters())), lr=lr)
 
     dev_data = json.load(open('data/train_rank/dev.json', 'r', encoding='utf-8'))
-    train_data = json.load(open('data/train_rank/train.json', 'r', encoding='utf-8'))
     # 测试集上限 0.738
     error = evaluate_qg_precision(dev_data)
 
@@ -268,6 +264,7 @@ if __name__ == '__main__':
         model.load(model_path=model_path)
 
     if is_train:
+        train_data = json.load(open('data/train_rank/train.json', 'r', encoding='utf-8'))
         train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_data, dev_data, device, model_name,
                    vocabulary)
     else:
@@ -277,3 +274,4 @@ if __name__ == '__main__':
             batch_size=1, num_workers=0, collate_fn=test_collate)
         _ = evaluate(model=model, data=test_data)
     print('all used time is', datetime.now() - start_time)
+    # lstm 56.25%

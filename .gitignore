@@ -1,6 +1,8 @@
 ,git
 .idea
 __pycache__
-data
-model
-resources
+resources/bert-base-chinese/config.json
+resources/bert-base-chinese/pytorch_model.bin
+resources/pkubase-complete-2020/pkubase-complete.txt
+resources/bert-base-chinese-vocab.txt
+resources/pkubase-mention2ent.txt

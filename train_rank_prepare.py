@@ -9,8 +9,7 @@ from torch.utils.data import DataLoader
 from models import Model
 
 from train_filter import load_vocabulary, FilterDataset, test_collate, get_topk_candidate
-
-endpoint = 'http://10.201.180.179:8890/sparql'
+from train_filter_prepare import endpoint
 
 
 def get_entity_relation_pair(data_path):
@@ -21,9 +20,9 @@ def get_entity_relation_pair(data_path):
     '''
     new_data = []
     k = 10
-    model_name = 'lstm'
+    model_name = 'bert'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')  # 检测GPU
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')  # 检测GPU
 
     if torch.cuda.is_available():
         from torch.backends import cudnn
@@ -44,8 +43,9 @@ def get_entity_relation_pair(data_path):
         if len(true) == 0:
             return 0
         acc = 0
-        for v in sum(list(pred.values()), []):
-            if v in true:
+        pred = sum(list(pred.values()), [])
+        for v in true:
+            if v in pred:
                 acc += 1
         return acc / len(true)
     accuracy = 0
@@ -229,7 +229,7 @@ def evaluate_qg_precision(data):
             if len(each) == len(node['parse']) and all([e in each for e in node['parse']]):
                 count += 1
                 flag = 1
-                break
+                break  # 不同的mention存在相同的实体
         if flag == 0:
             error.append(node['parse'])  # 出错检测
         num += len(candidates)
@@ -276,5 +276,5 @@ def train_rank_prepare():
 if __name__ == '__main__':
     train_rank_prepare()
     # dev_data = json.load(open('data/train_rank/dev.json', 'r', encoding='utf-8'))
-    # # 测试集上限 0.738
+    # # 测试集上限 0.748
     # evaluate_qg_precision(dev_data)

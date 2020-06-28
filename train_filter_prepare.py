@@ -3,12 +3,12 @@ import random
 import re
 
 import jieba
-# from stanfordcorenlp import StanfordCoreNLP
+import pkuseg
 from datetime import datetime
 
 from SPARQLWrapper import JSON, SPARQLWrapper
 
-endpoint = 'http://10.201.180.179:8890/sparql'
+endpoint = 'http://10.201.85.79:8890/sparql'
 
 
 def sparql_parser(line):
@@ -42,7 +42,7 @@ def sparql_parser(line):
     while flag:
         flag = 0
         new_path = []
-        for p in path:
+        for p in path:  # p为查询路径
             if re.fullmatch('<.+?>|".+?"', p[0]):  # 到达实体，无需再添加
                 new_path.append(p)
                 continue
@@ -53,7 +53,7 @@ def sparql_parser(line):
                 elif ttl[-1] == p[0] and ttl[0] not in p:
                     temp.append([ttl[0], '+', ttl[1]])
             if temp:
-                for t in temp:
+                for t in temp:  # 一个节点存在多个关系
                     var.append(p[0])
                     new_path.append(t+p)
                     flag = 1
@@ -89,6 +89,8 @@ def train_filter_prepare():
     # load our dict.txt
     jieba.load_userdict('resources/dict.txt')
     print('loaded user dict: ', datetime.now() - start_time)
+    seg = pkuseg.pkuseg()  # 默认初始化
+    stopwords = json.load(open('resources/stopwords.txt', 'r', encoding='utf-8'))
 
     data = []
     with open(path, 'r', encoding='utf-8') as file:
@@ -109,9 +111,16 @@ def train_filter_prepare():
                 # count += 1
                 # print(count)
 
-                # jieba分词
-                splited_question = [word for word in jieba.lcut(question, cut_all=True) if word not in ['', ' ', ',', '?', '？']]
-                # splited_question = [word for word in jieba.lcut(question) if word not in ['', ' ', ',', '?', '？']]  # 0.8578333333333332
+                # 分词
+                splited_question = [each for each in jieba.lcut(question, cut_all=True)
+                                    if each not in ['', ' ', '，', ',', '。', '.', '?', '？', '"', '\'']]
+                splited_question += [each for each in seg.cut(question)
+                                     if each not in ['', ' ', '，', ',', '。', '.', '?', '？', '"', '\'']]
+                for each in re.findall(r'"(.+)"', question):
+                    if each not in splited_question:
+                        splited_question.append(each)
+                splited_question = [each for each in splited_question if each not in stopwords]
+                splited_question = list(set(splited_question))
 
                 data.append({
                     'question': question,
@@ -128,42 +137,59 @@ def train_filter_prepare():
     characters = list(set(characters))
     characters.append('UNK')  # 为未知的字符准备
     json.dump(characters, open('resources/characters.txt', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
-    print('data: %d, all finished, ' % len(data), datetime.now() - start_time)
 
     print('\ngetting entity candidates ...')
     data = get_entity_candidates(data)
+    print('get_entity_candidates: ', datetime.now() - start_time)
 
     print('\nevaluating the ratio of entity existed in candidates ...')
     evaluate_entity_precision(data)
+    print('evaluate_entity_precision: ', datetime.now() - start_time)
 
     print('\ngetting entity-relation pair ...')
     data = get_entity_relation_pair(data)
+    print('get_entity_relation_pair: ', datetime.now() - start_time)
 
     print('evaluating pair precision ... ')
     evaluate_pair_precision(data)
+    print('evaluate_pair_precision: ', datetime.now() - start_time)
 
     print('\nspliting data into train and test ...')
     split_train_test(data)
+    print('split_train_test: ', datetime.now() - start_time)
 
 
 def get_entity_candidates(data):
+    s_time = datetime.now()
     mention2ent = json.load(open('resources/mention2ent.json', 'r', encoding='utf-8'))
     count = 0
+    num = 0
     for node in data:
         node['entity_candidates'] = {}
-        for token in node['tokens']:
-            if token in mention2ent:
-                node['entity_candidates'][token] = mention2ent[token]
-            else:
-                # ！todo 当mention没有直接存在mention2ent.txt中时（提升点）
-                if token.lower() in mention2ent:
-                    node['entity_candidates'][token.lower()] = mention2ent[token.lower()]
-                if token.upper() in mention2ent:
-                    node['entity_candidates'][token.upper()] = mention2ent[token.upper()]
-        for candidate in list(node['entity_candidates'].values()):
-            count += len(candidate)
 
-    print('average entity candidates: ', count/len(data))  # 45.16
+        date = re.findall(r'([0-9]+年[0-9]+月[0-9]+日|[0-9]+年[0-9]+月|[0-9]+月[0-9]+日)', node['question'])  # 提取日期
+        if date:
+            temp = []
+            for each in re.split(r'年|月|日', date[0]):
+                if len(each) == 1:
+                    temp.append('0' + each)
+                elif each != '':
+                    temp.append(each)
+            node['entity_candidates']['date'] = ['"'+'-'.join(temp)+'"']
+
+        for token in node['tokens']:
+            if token in mention2ent and token not in node['entity_candidates']:
+                node['entity_candidates'][token] = mention2ent[token]
+            elif token not in mention2ent and token not in node['entity_candidates']:
+                node['entity_candidates'][token] = ['<'+token+'>', '"'+token+'"']
+
+        for candidate in list(node['entity_candidates'].values()):
+            num += len(candidate)
+        # count += 1
+        # if count % 100 == 0:
+        #     print(count, 'finished', datetime.now() - s_time)
+
+    print('average entity candidates: ', num/len(data))  # 45.16
     print('data: %d, got entity candidates' % len(data))
     return data
 
@@ -186,7 +212,7 @@ def evaluate_entity_precision(data):
             rate += (r/len(entity))
         if len(entity) == 0 or r != len(entity):
             error.append(node)
-    print('the ratio of true entities exist in candidates: ', rate/len(data))  # 0.9245416666666666
+    print('the ratio of true entities exist in candidates: ', rate/len(data))
     json.dump(error, open('data/entity_error.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
 
 
@@ -248,7 +274,7 @@ def evaluate_pair_precision(data):
         for p in node['parse']:
             true_pair.append(p[:3])
         candidate = sum(list(node['pair_candidates'].values()), [])  # 多维list转为一维
-        for e in true_pair:
+        for e in true_pair:  # 不同 mention 有相同的实体
             if e in candidate:
                 r += 1
         if len(true_pair) != 0:

@@ -2,6 +2,7 @@ import json
 import re
 
 import jieba
+import pkuseg
 import torch
 from SPARQLWrapper import SPARQLWrapper, JSON
 from datetime import datetime
@@ -14,8 +15,7 @@ from train_filter import load_vocabulary, FilterDataset, get_topk_candidate
 from train_filter_prepare import get_entity_candidates, get_entity_relation_pair
 from train_rank import test_collate, RankDataset
 from train_rank_prepare import get_query_graph
-
-endpoint = 'http://10.201.180.179:8890/sparql'
+from train_filter_prepare import endpoint
 
 
 def build_sparql(parse):
@@ -151,8 +151,8 @@ def parse_result():
 def dev_result():
     start_time = datetime.now()
 
-    model_name = 'lstm'
-    device = 'cuda:1'
+    model_name = 'bert'
+    device = 'cuda:0'
     data = json.load(open('data/train_rank/dev.json', 'r', encoding='utf-8'))
 
     vocabulary = load_vocabulary()
@@ -191,6 +191,7 @@ def dev_result():
         # print(query)
 
         answer = get_answer(query)
+        node['pred_answer'] = answer
         result = f1_score(node['answer'], answer)
 
         # if any([r != 1 for r in result]):
@@ -210,6 +211,7 @@ def dev_result():
     # 自己的pkubase-clean，准确率： 0.618728, 召回率：0.640037, F1-score：0.619357
     print('准确率： %f, 召回率：%f, F1-score：%f' % (precision, recall, f1))
     # json.dump(error, open('data/parser_answer_error.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+    json.dump(new_data, open('data/our_dev_result.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
     print(datetime.now() - start_time)
 
 
@@ -221,101 +223,114 @@ def test_result(path):
     """
     start_time = datetime.now()
     k = 10
-    model_name = 'lstm'
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')  # 检测GPU
+    model_name = 'bert'
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')  # 检测GPU
 
-    # jieba.load_userdict('resources/dict.txt')
-    # print('loaded user dict: ', datetime.now() - start_time)
-    #
-    # data = []
-    # with open(path, 'r', encoding='utf-8') as file:
-    #     for line in file:
-    #         question = re.findall(r'q[0-9]+:(.+)', line.rstrip('？\n').rstrip('?\n'))[0]
-    #         splited_question = [word for word in jieba.lcut(question, cut_all=True) if
-    #                             word not in ['', ' ', ',', '?', '？']]
-    #         data.append({
-    #             'question': question,
-    #             'tokens': splited_question,
-    #             'entity_candidates': {},
-    #         })
-    #
-    # print('\ngetting entity candidates ...')
-    # data = get_entity_candidates(data)
-    # json.dump(data, open(path+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
-    #
-    # print('\ngetting entity-relation pair ...')
-    # data = get_entity_relation_pair(data)
-    # json.dump(data, open(path+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
-    #
-    # '''
-    # filter  ##################################
-    # '''
-    # if torch.cuda.is_available():
-    #     from torch.backends import cudnn
-    #     cudnn.benchmark = True
-    # print('device name ', device)
-    #
-    # vocabulary = load_vocabulary()
-    # model = Model(model_name=model_name, device=device, size_vocabulary=len(vocabulary) + 1)  # +1 为pad值，index=0
-    #
-    # print('load model ...')
-    # model.load('model/filter/' + model_name + str(k))
-    # print('loading data ...')
-    # data = DataLoader(FilterDataset(data, vocabulary, device, is_train=False, model_name=model_name, is_test=True),
-    #                   batch_size=1, num_workers=0, collate_fn=test_collate)
-    #
-    # new_data = []
-    # print('filting entity relation pair ...')
-    # for i, item in enumerate(data):
-    #     index = model.predict_filter(item, k)
-    #     pair = get_topk_candidate(index, item)  # dict: key value
-    #     new_data.append({
-    #         'question': item['origin_data']['question'],
-    #         'pair': pair,  # e +/- r
-    #     })
-    # print('filter pair has finished !', datetime.now() - start_time)
-    # json.dump(new_data, open(path+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
-    #
-    # '''
-    # get query graph candidates #########
-    # '''
-    # print('getting query graph ... ')
-    # new_data = get_query_graph(new_data)
-    # json.dump(new_data, open(path+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+    jieba.load_userdict('resources/dict.txt')
+    print('loaded user dict: ', datetime.now() - start_time)
+    seg = pkuseg.pkuseg()  # 默认初始化
+    stopwords = json.load(open('resources/stopwords.txt', 'r', encoding='utf-8'))
+
+    data = []
+    with open(path, 'r', encoding='utf-8') as file:
+        for line in file:
+            question = re.findall(r'q[0-9]+:(.+)', line.rstrip('？\n').rstrip('?\n'))[0]
+
+            # 分词
+            splited_question = [each for each in jieba.lcut(question, cut_all=True)
+                                if each not in ['', ' ', '，', ',', '。', '.', '?', '？', '"', '\'']]
+            splited_question += [each for each in seg.cut(question)
+                                 if each not in ['', ' ', '，', ',', '。', '.', '?', '？', '"', '\'']]
+            for each in re.findall(r'"(.+)"', question):
+                if each not in splited_question:
+                    splited_question.append(each)
+            splited_question = [each for each in splited_question if each not in stopwords]
+            splited_question = list(set(splited_question))
+
+            data.append({
+                'question': question,
+                'tokens': splited_question,
+                'entity_candidates': {},
+            })
+
+    print('\ngetting entity candidates ...')
+    data = get_entity_candidates(data)
+    json.dump(data, open(path+'.'+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+
+    print('\ngetting entity-relation pair ...')
+    data = get_entity_relation_pair(data)
+    json.dump(data, open(path+'.'+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+
+    '''
+    filter  ##################################
+    '''
+    if torch.cuda.is_available():
+        from torch.backends import cudnn
+        cudnn.benchmark = True
+    print('device name ', device)
+
+    vocabulary = load_vocabulary()
+    model = Model(model_name=model_name, device=device, size_vocabulary=len(vocabulary) + 1)  # +1 为pad值，index=0
+
+    print('load model ...')
+    model.load('model/filter/' + model_name + str(k))
+    print('loading data ...')
+    data = DataLoader(FilterDataset(data, vocabulary, device, is_train=False, model_name=model_name, is_test=True),
+                      batch_size=1, num_workers=0, collate_fn=test_collate)
+
+    new_data = []
+    print('filting entity relation pair ...')
+    for i, item in enumerate(data):
+        index = model.predict_filter(item, k)
+        pair = get_topk_candidate(index, item)  # dict: key value
+        new_data.append({
+            'question': item['origin_data']['question'],
+            'pair': pair,  # e +/- r
+        })
+    data = new_data
+    print('filter pair has finished !', datetime.now() - start_time)
+    json.dump(data, open(path+'.'+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+
+    '''
+    get query graph candidates #########
+    '''
+    print('getting query graph ... ')
+    data = get_query_graph(data)
+    json.dump(data, open(path+'.'+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
 
     '''
     rank ################################
     '''
-    # vocabulary = load_vocabulary()
-    # model = Model(device=device, size_vocabulary=len(vocabulary) + 1, model_name=model_name)
-    # print('load model ...')
-    # model.load('model/rank/' + model_name)
-    # print('loading data ...')
-    # data = DataLoader(
-    #     RankDataset(data=new_data, device=device, is_train=False, model_name=model_name, vocabulary=vocabulary, is_test=True),
-    #     batch_size=1, num_workers=0, collate_fn=test_collate)
-    #
-    # print('ranking ...')
-    # new_data = []
-    # for _, item in enumerate(data):
-    #     index = model.predict_rank(item)
-    #     pred = item['qg_'][index]
-    #     new_data.append({
-    #         'question': item['origin_data']['question'],
-    #         'pred': pred,  # query graph
-    #     })
-    # print('predicted all query graph ', datetime.now() - start_time)
-    # json.dump(new_data, open(path+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
+    vocabulary = load_vocabulary()
+    model = Model(device=device, size_vocabulary=len(vocabulary) + 1, model_name=model_name)
+    print('load model ...')
+    model.load('model/rank/' + model_name)
+    print('loading data ...')
+    data = DataLoader(
+        RankDataset(data=data, device=device, is_train=False, model_name=model_name, vocabulary=vocabulary, is_test=True),
+        batch_size=1, num_workers=0, collate_fn=test_collate)
+
+    print('ranking ...')
+    new_data = []
+    for _, item in enumerate(data):
+        index = model.predict_rank(item)
+        pred = item['qg_'][index]
+        new_data.append({
+            'question': item['origin_data']['question'],
+            'pred': pred,  # query graph
+        })
+    data = new_data
+    print('predicted all query graph ', datetime.now() - start_time)
+    json.dump(data, open(path+'.'+model_name+'.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=4)
 
     '''
     get answer  #############################
     '''
-    new_data = json.load(open(path+model_name+'.json', 'r', encoding='utf-8'))
 
     print('getting answer ...')
-    with open(path+model_name+'.answer.txt', 'w', encoding='utf-8') as answer_file:
+    with open(path+'.'+model_name+'.answer.txt', 'w', encoding='utf-8') as answer_file:
         count = 0
-        for node in new_data:
+        for node in data:
             # 塑造sparql
             count += 1
             query = build_sparql(node['pred'])

@@ -51,8 +51,8 @@ class FilterDataset(Dataset):
                         fake_pair.append(''.join(v))
 
             # 每个就选取100个负例来训练
-            if len(fake_pair) > 100:
-                fake_pair = random.sample(fake_pair, 100)
+            if len(fake_pair) > 64:
+                fake_pair = random.sample(fake_pair, 64)
 
             label = [0] * len(fake_pair) + [1] * len(true_pair)
             if self.model_name == 'lstm':
@@ -64,29 +64,25 @@ class FilterDataset(Dataset):
                     'label': torch.tensor(label, dtype=torch.float).to(device=self.device)
                 }
             elif self.model_name == 'bert':
-                ques = self.tokenizer.encode_plus(
-                    question,
-                    None,
-                    add_special_tokens=True,
-                    max_length=self.max_len,
-                    pad_to_max_length=True,
-                    return_token_type_ids=True
-                )['input_ids']
-
-                pair = [self.tokenizer.encode_plus(
-                    each,
-                    None,
-                    add_special_tokens=True,
-                    max_length=self.max_len,
-                    pad_to_max_length=True,
-                    return_token_type_ids=True
-                )['input_ids'] for each in fake_pair + true_pair]
+                input_ids = []
+                token_type_ids = []
+                for each in fake_pair + true_pair:
+                    enc = self.tokenizer.encode_plus(
+                        question,
+                        each,
+                        add_special_tokens=True,
+                        max_length=self.max_len,
+                        pad_to_max_length=True,
+                        return_token_type_ids=True
+                    )
+                    input_ids.append(enc['input_ids'])
+                    token_type_ids.append(enc['token_type_ids'])
                 return {
-                    'ques': torch.tensor([ques] * len(pair), dtype=torch.long).to(device=self.device),
-                    'pair': torch.tensor(pair, dtype=torch.long).to(device=self.device),
+                    'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                    'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                     'label': torch.tensor(label, dtype=torch.float).to(device=self.device)
                 }
-        else:
+        else:  # evaluate
             pair = []  # index
             pair_ = []  # 文字
             mention = []
@@ -116,33 +112,30 @@ class FilterDataset(Dataset):
                     'origin_data': self.data[item]  # 为了下游任务
                 }
             elif self.model_name == 'bert':
-                ques = self.tokenizer.encode_plus(
-                    question,
-                    None,
-                    add_special_tokens=True,
-                    max_length=self.max_len,
-                    pad_to_max_length=True,
-                    return_token_type_ids=True
-                )['input_ids']
-                pair = [self.tokenizer.encode_plus(
-                    each,
-                    None,
-                    add_special_tokens=True,
-                    max_length=self.max_len,
-                    pad_to_max_length=True,
-                    return_token_type_ids=True
-                )['input_ids'] for each in pair]
+                input_ids = []
+                token_type_ids = []
+                for each in pair:
+                    enc = self.tokenizer.encode_plus(
+                        question,
+                        each,
+                        add_special_tokens=True,
+                        max_length=self.max_len,
+                        pad_to_max_length=True,
+                        return_token_type_ids=True
+                    )
+                    input_ids.append(enc['input_ids'])
+                    token_type_ids.append(enc['token_type_ids'])
                 if self.is_test:
                     return {
-                        'ques': torch.tensor([ques] * len(pair), dtype=torch.long).to(device=self.device),
-                        'pair': torch.tensor(pair, dtype=torch.long).to(device=self.device),
+                        'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                        'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                         'pair_': pair_,  # 文字
                         'mention': mention,  # 后面用于对mention取topk
                         'origin_data': self.data[item]  # 为了下游任务
                     }
                 return {
-                    'ques': torch.tensor([ques] * len(pair), dtype=torch.long).to(device=self.device),
-                    'pair': torch.tensor(pair, dtype=torch.long).to(device=self.device),
+                    'input_ids': torch.tensor(input_ids, dtype=torch.long).to(device=self.device),
+                    'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long).to(device=self.device),
                     'pair_': pair_,  # 文字
                     'mention': mention,  # 后面用于对mention取topk
                     'true_pair': true_pair_,  # 文字
@@ -162,17 +155,17 @@ def test_collate(batch_data):
 
 def train_filter_collate(batch_data):
     # 将数据整理为能够并行处理的格式
-    if type(batch_data[0]['ques']) == list:
+    if 'ques' in batch_data[0]:  # lstm
         return {
             'ques': [ques for data in batch_data for ques in data['ques']],
             'pair': [ent for data in batch_data for ent in data['pair']],
             'label': torch.cat(tuple([data['label'] for data in batch_data]))
         }
-    elif type(batch_data[0]['ques']) == torch.Tensor:
+    elif 'input_ids' in batch_data[0]:  # bert
         return {
-            'ques': torch.cat(tuple([data['ques'] for data in batch_data])),
-            'pair': torch.cat(tuple([data['pair'] for data in batch_data])),
-            'label': torch.cat(tuple([data['label'] for data in batch_data]))
+            'input_ids': torch.cat(tuple([data['input_ids'] for data in batch_data])),
+            'token_type_ids': torch.cat(tuple([data['token_type_ids'] for data in batch_data])),
+            'label': torch.cat(tuple([data['label'] for data in batch_data]))  # .half()  # 半精度
         }
 
 
@@ -195,7 +188,7 @@ def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_
         # loaddatatime = datetime.now()
         for i, item in enumerate(train_data):
             # print('loaddatatime: ', datetime.now()-loaddatatime)
-            epoch_loss.append(model.train_filter(item, optimizer, loss_fn))
+            epoch_loss.append(model.train_filter(item, optimizer, loss_fn, i=i))
             # loaddatatime = datetime.now()
 
         epoch_loss = np.mean(epoch_loss)
@@ -212,7 +205,7 @@ def train_loop(model, loss_fn, optimizer, epochs, batch_size, model_path, train_
             flag = 0
         else:
             flag += 1
-        if flag >= 5:
+        if flag >= 3:
             break
     print('\nbest accuracy is %.3f' % best_res)
     # print('all loss are', all_loss)
@@ -247,8 +240,9 @@ def evaluate(model, data):
         if len(true) == 0:
             return 0
         acc = 0
-        for v in sum(list(pred.values()), []):
-            if v in true:
+        pred = sum(list(pred.values()), [])
+        for v in true:
+            if v in pred:
                 acc += 1
         return acc / len(true)
 
@@ -282,10 +276,10 @@ if __name__ == '__main__':
     start_time = datetime.now()
     parser = argparse.ArgumentParser(description='gpu, epochs, batch_size, lr, is_train')
     parser.add_argument('--gpu', '-gpu', help='str :0, 1, 选择GPU， 默认0', default='0', type=str)
-    parser.add_argument('--model_name', '-name', help='str', default='lstm', type=str)
+    parser.add_argument('--model_name', '-name', help='str', default='bert', type=str)
     parser.add_argument('--epochs', '-epochs', help='int: 300', default=300, type=int)
-    parser.add_argument('--batch_size', '-batch', help='int: 50', default=50, type=int)
-    parser.add_argument('--lr', '-lr', help='学习率, 默认1e-3', default=1e-3, type=float)
+    parser.add_argument('--batch_size', '-batch', help='int: 50', default=4, type=int)  # lstm:50 bert:4
+    parser.add_argument('--lr', '-lr', help='学习率, 默认1e-3', default=2e-5, type=float)  # lstm 1e-3 bert 2e-5
     parser.add_argument('--is_train', '-train', help='bool, 默认True', default=True, type=ast.literal_eval)
     parser.add_argument('--is_load', '-load', help='bool, False', default=False, type=ast.literal_eval)
     parser.add_argument('--model_path', '-path', help='模型路径, str', default='model/filter/', type=str)
@@ -324,7 +318,7 @@ if __name__ == '__main__':
 
     dev_data = json.load(open('data/train_filter/dev.json', 'r', encoding='utf-8'))
     train_data = json.load(open('data/train_filter/train.json', 'r', encoding='utf-8'))
-    # 测试集的准确度上限 0.9079
+    # 测试集的准确度上限 0.748
     evaluate_pair_precision(dev_data)
 
     if is_train:
