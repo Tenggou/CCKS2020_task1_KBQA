@@ -39,15 +39,15 @@
 
 2. 使用virtuoso搭建PKUBASE的SPARQL查询端口（[搭建流程](https://blog.csdn.net/wtgwtg_/article/details/107963602)），搭建完成后修改utils/configure.py中的endpoint。
 
-4. 准备数据与训练（使用RTX2080TI）。约耗时1+5+2+7小时。
+3. 准备数据与训练（使用RTX2080TI）。约耗时1+5+2+7小时。‘
 
    ```shell
-bash data_prepare_and_train_modules.sh
+   bash data_prepare_and_train_modules.sh
    ```
-   
-5. 获取验证集和测试集的答案。约耗时
 
-   ```shell
+4. 获取验证集和测试集的答案。约耗时2小时。
+
+   ```
    python test.py
    ```
 
