@@ -1,0 +1,9 @@
+.git
+.idea
+__pycache__
+data/filter/*
+data/rank/*
+parameter/*
+resource/pkubase-complete2.txt
+resource/pkubase-mention2ent.txt
+resource/bert-base-chinese/pytorch_model.bin
